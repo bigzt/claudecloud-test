@@ -1,10 +1,15 @@
 {
     "archives": null,
     "files": [
-        "gui/cargo_control/cargo_control.res.lua",
-        "gui/cargo_control/cargo_control.script.lua",
+        "cargo_control.gs.lua",
+        "cargo_control.script.lua",
+        "gui/cargo_control/line_stops.res.lua",
+        "gui/cargo_control/line_stops.script.lua",
+        "gui/cargo_control/warehouse_panel.res.lua",
+        "gui/cargo_control/warehouse_panel.script.lua",
         "scripts/cargo_control/adapter.lua",
         "scripts/cargo_control/controller.lua",
-        "scripts/cargo_control/rules.lua"
+        "scripts/cargo_control/rules.lua",
+        "scripts/cargo_control/shared.lua"
     ]
 }

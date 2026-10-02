@@ -2,138 +2,142 @@
 
 ## 需求
 
-| # | 需求 | 本 mod 的做法 |
-|---|---|---|
-| 1 | 仓库可手动设置**禁止存放**的货物 | 仓库对该货物的上限设为 `0` |
-| 2 | 线路可在**某站卸 / 不卸**某货物 | 站点规则 `unload`（此站卸）/ `keep`（此站不卸） |
-| 3 | 仓库**限量**，超过就不卸，`0` 即禁止 | 仓库上限 `n`：库存 ≥ n 停卸，降到 `n - 回差` 再恢复 |
+| # | 需求 | 在哪设置 | 本 mod 的做法 |
+|---|---|---|---|
+| 1 | 仓库可手动设置**禁止存放**的货物 | 仓库窗口 →「货物存放限制」 | 该货物上限设为 `0`（「禁止」按钮） |
+| 2 | 线路可在**某站卸 / 不卸**某货物 | 线路管理器 → 站点行 →「卸货」 | 每种货物选 默认 / 卸 / 不卸 |
+| 3 | 仓库**限量**，超过就不卸，`0` 即禁止 | 仓库窗口 →「货物存放限制」 | 上限 `n`：库存 ≥ n 停卸，降到约 90% 恢复 |
 
-三条需求合起来就是一个判断：**线路 L 第 i 站到站时，货物 C 卸不卸？**
-需求 1 是需求 3 在上限为 0 时的特例，所以两者用同一套逻辑。
+需求 1 是需求 3 在上限为 0 时的特例，两者用同一个输入框。
 
-## 核心思路
+## 界面
 
-TF3 里车站本身不再存货，货只有在有去处（工厂、需求方或仓库）时才能卸下；
-线路窗口里可以按货物设置每站的装 / 卸，并有“到站强制卸货”。
+### 仓库窗口（需求 1、3）
 
-所以本 mod **不改仓库本身**，而是做一个控制循环：
+在仓库窗口加一个「▸ 货物存放限制」按钮（有规则时显示 `*`），展开后：
 
 ```
-每 60 帧：
-  读各仓库每种货物的库存（STOCK_LIST）
-  对每条线路的每个站点、每种有规则的货物：
-      allow = rules.decide(...)      -- true 卸 / false 不卸 / nil 不干预
-  如果和线路当前设置不同 → 改线路副本 → makeLineUpdateCmd 写回（每条线路最多一条命令）
+▾ 货物存放限制 *
+  上限留空 = 不限，0 = 禁止存放。库存达到上限后……
+  煤      28   上限 [ 500 ]  [禁止]      限量
+  化学品   0   上限 [ 0   ]  [取消禁止]  禁止存放
+  ▸ 添加货物            ← 展开后列出所有货物，点一个即加入（默认禁止）
+  关联车站：源和 直升机场、岛间 车站
 ```
 
-这样“仓库禁存 / 限量”会作用到**所有停靠该仓库所在站点的线路**，
-“站点规则”只作用到那条线路的那一站。
+- 上限输入框：留空 = 不限，`0` = 禁止，数字 = 上限。回车或点别处生效。
+- 列表里自动包含仓库现有库存的货物。
+- 「关联车站」是 mod 自动算出的：仓库 400 米内的车站。规则只作用于停靠这些车站的线路。
 
-### 判断优先级（`rules.decide`）
+> 你提议的位置是「配置」按钮旁边。游戏给 mod 开放的是**窗口内容扩展点**，
+> 插件只能加在窗口内容里，不能插进底部按钮栏。所以这里做成内容区的一个可折叠按钮，
+> 实际位置在进游戏后确认。
+
+### 线路管理器（需求 2）
+
+每个站点行原来的货物框后面加一个「▸ 卸货」按钮（有规则时显示 `卸货*`），展开后：
+
+```
+1  源和 直升机场   [🧪]  ▾ 卸货*
+     全部货物   [● 默认] [卸] [不卸]
+     化学品     [默认] [卸] [● 不卸]
+         当前：不卸（站点规则：不卸）
+2  岛间 直升机场   [  ]  ▸ 卸货
+```
+
+- 「全部货物」对这一站所有货物生效；单独设置的货物优先。
+- 「当前」一行显示 mod 这一刻的实际判断和原因，比如「不卸（仓库已满 500/500）」。
+- 规则跟着**车站**走，不跟站序号：线路增删、调整停靠顺序后规则不会错位。
+  同一条线路多次停靠同一车站时共用一条规则。
+
+挂载方式和已上架的 TF3 mod「Improved Destination Displays」相同：替换游戏
+导出的 `LineCargoDisplay`，也就是站点行里那个货物框。
+
+## 判断逻辑
+
+线路 L 停靠车站 S 时，货物 C 卸不卸：
 
 | 顺序 | 条件 | 结果 |
 |---|---|---|
-| 1 | 站点规则 = `keep` | 不卸 |
-| 2 | 站点绑定的仓库对此货物上限 = 0 | 不卸（禁止存放） |
-| 3 | 库存 ≥ 上限，或在回差区内且上次是停卸 | 不卸（已满） |
-| 4 | 站点规则 = `unload` | 卸 |
-| 5 | 其他 | 不干预，沿用游戏/玩家原设置 |
+| 1 | L 在 S 对 C 设为「不卸」 | 不卸 |
+| 2 | S 关联的仓库对 C 上限 = 0 | 不卸（禁止存放） |
+| 3 | 库存 ≥ 上限，或停卸后还没降到恢复线 | 不卸（已满） |
+| 4 | L 在 S 对 C 设为「卸」 | 卸 |
+| 5 | 其他 | 不干预，保持游戏原设置 |
 
-强制卸货（4）**仍受仓库上限约束**（2、3），即“超过则不卸货”优先。
+「卸」仍受仓库上限约束，即「超过则不卸货」优先。
 
-### 还原
-
-mod 第一次改某个设置时，把游戏原值记在 `state.overrides`。规则删除或条件
-解除（比如库存回落）时，把原值写回并删掉记录。删掉 mod 前先清空规则跑一轮，
-线路就回到原状。
-
-### 回差
-
-上限 100、回差比例 0.1 时：库存到 100 停卸，降到 90 才恢复。避免库存在
-99/100 之间来回跳，每帧都改线路。
+实现：游戏脚本每 2 秒读一次仓库库存，按上表算出每个站点每种货物该卸不卸，
+和线路当前设置不同才用 `makeLineUpdateCmd` 改（每条线路最多一条命令）。
+第一次改某个设置时记下游戏原值，规则删除或库存回落后改回原值。
 
 ## 文件
 
 ```
 mod/cargo_control/
   mod.json, _content.json, _metadata/modinfo.json   TF3 mod 格式
-  content/gui/cargo_control/cargo_control.res.lua    把插件挂到游戏底栏
-  content/gui/cargo_control/cargo_control.script.lua 入口：启动、定时、存档、控制台命令
-  content/scripts/cargo_control/rules.lua            规则引擎（纯 Lua，无游戏依赖）
-  content/scripts/cargo_control/controller.lua       控制循环（通过 adapter 访问游戏）
-  content/scripts/cargo_control/adapter.lua          唯一调用 api.* 的地方
-tests/run.lua                                        游戏外单测
+  content/cargo_control.gs.lua                       注册游戏脚本
+  content/cargo_control.script.lua                   游戏脚本：规则存档、每 2 秒控制、接收界面事件
+  content/gui/cargo_control/line_stops.*             线路管理器站点行的「卸货」设置
+  content/gui/cargo_control/warehouse_panel.*        仓库窗口的「货物存放限制」
+  content/scripts/cargo_control/rules.lua            判断规则（纯 Lua）
+  content/scripts/cargo_control/controller.lua       控制循环、自动关联车站和仓库
+  content/scripts/cargo_control/adapter.lua          唯一读写游戏数据的地方
+  content/scripts/cargo_control/shared.lua           界面 ↔ 游戏脚本的事件和状态读取
+tests/run.lua                                        规则和控制循环单测
+tests/gui_smoke.lua                                  界面和游戏脚本冒烟测试（用桩代替游戏）
 ```
 
-运行测试：在仓库根目录执行 `lua5.2 tests/run.lua`（TF3 用的就是 Lua 5.2）。
+运行测试（仓库根目录，TF3 用的也是 Lua 5.2）：
 
-## 用法（第一版：控制台）
-
-第一版还没有图形界面，规则在游戏控制台里设置（打开调试模式后可用控制台）：
-
-```lua
-cargoctl.bind(站点组ID, 仓库ID)          -- 这个站卸下的货进哪个仓库
-cargoctl.forbid(仓库ID, "COAL")           -- 需求1：仓库禁存煤
-cargoctl.cap(仓库ID, "IRON_ORE", 500)     -- 需求3：铁矿最多 500，满了不卸
-cargoctl.cap(仓库ID, "IRON_ORE", nil)     -- 取消限制
-cargoctl.stop(线路ID, 2, "PLANKS", "keep")   -- 需求2：此线第 2 站不卸木板
-cargoctl.stop(线路ID, 3, "PLANKS", "unload") -- 此线第 3 站卸木板
-cargoctl.stop(线路ID, 3, "PLANKS", nil)      -- 清除
-cargoctl.hysteresis(0.1)                  -- 回差比例
-cargoctl.show()                           -- 查看当前规则
+```
+lua5.2 tests/run.lua && lua5.2 tests/gui_smoke.lua
 ```
 
-货物 ID 用游戏内部名（如 `COAL`），实体 ID 可在调试模式下点选实体查看。
+数据流：界面不直接改规则，而是用 `makeScriptingSendEventCmd` 发事件给游戏脚本；
+游戏脚本改规则、存进自己的状态（随存档保存），并把「当前判断」写进状态给界面读。
+这和 Improved Destination Displays 的做法一致，联机时各端也保持一致。
 
 ## API 依据与可信度
 
-TF3 于 2026-09-29 发售，官方脚本文档在 `wiki.transportfever3.com/script-doc/`。
-本次开发环境无法直接访问该站点，API 名字来自公开的 TF3 mod 项目对官方文档
-的整理（[Transport-Fever-3-Multiplayer-Mod](https://github.com/Juliansgith/Transport-Fever-3-Multiplayer-Mod)
-的 `investigation/` 目录）。
-
 | 用到的东西 | 来源 | 可信度 |
 |---|---|---|
-| mod.json / _content.json / modinfo.json 格式，`ug_require`，react 插件 `GameBarInfoDisplayExtension` + `react.onStep` | 已上架 TF3 mod 的实际用法 | 已知 |
-| `api.engine.getComponent`、`getEntitiesWithComponent`、`ComponentType.LINE / STOCK_LIST` | 已上架 mod 使用 | 已知 |
-| `api.cmd.makeLineUpdateCmd(lineEntity, Engine.Component.Line)`、`sendCommand` | 官方脚本文档 | 已知 |
-| `api.gui.game.getGuiSaveData / setGuiSaveData`（数据随存档） | 已上架 mod 使用 | 已知 |
-| `Line.stops[i].stationGroup`、`Stop.loadMode`、`Stop.stopConfig`、`Line.customFilters` | 字段名已知 | **布局待验证** |
-| `STOCK_LIST` 里每个 stock 的货物类型、数量字段 | 由 `makeStockSetCargoAmountCmd(entity, stockId, amount, cargoType)` 推测 | **待验证** |
+| mod 格式、`ug_require`、`.gs.lua` 游戏脚本（`update` / `handleEvent` / `state:get/set/subscribeToEvent`） | 已上架 mod 的源码 | 已知 |
+| `react.RegisterRecipe / RegisterPluginRecipe / CallOriginalRecipe / useState`、`engine_react_util.useStepState`、`builtin.BoxLayout / TextView / TextInputField`、`button_react_util.makeTextButton` | 已上架 mod 的源码 | 已知 |
+| `react-replacement-config` 替换 `line_react_util.LineCargoDisplay`（参数 `lineEntity / stopIndex / stopCargoDisplay`） | Improved Destination Displays 源码 | 已知 |
+| `makeScriptingSendEventCmd`、`makeLineUpdateCmd`、`gameScriptSystem.getEntityForGameScript` | 官方脚本文档、已上架 mod | 已知 |
+| **仓库窗口扩展点**（猜的 `WarehouseEowExtensionPoint`） | 按 `LineEowExtensionPoint` / `IndustryEowExtensionPoint` 的命名规律推测 | **待验证** |
+| 站点卸货设置在 `Stop.stopConfig` 里的具体字段 | 字段名已知，布局推测 | **待验证** |
+| `STOCK_LIST` 里的货物类型和数量字段 | 由 `makeStockSetCargoAmountCmd` 参数推测 | **待验证** |
+| `api.res.cargoTypeRep`、车站位置（`STATION_GROUP` → 建筑 `transf`） | TPF2 的名字 | **待验证** |
 
-**所有待验证的部分都集中在 `adapter.lua` 的 `FIELDS` 表里**，其他文件不依赖游戏
-数据结构。
+所有数据结构上待验证的部分都集中在 `adapter.lua` 的 `FIELDS` 表里。
 
-## 进游戏后的第一步：确认字段
+## 第一次进游戏
 
 1. 把 `mod/cargo_control` 复制到
    `<Steam>/userdata/<Steam ID>/3493540/local/staging_area/cargo_control`，
    在 Mod Hub 里启用。
-2. 开一个存档，日志里应出现 `[cargo_control] 已加载`。
-3. 在线路窗口里手动把某站某货物改成“不卸”，然后控制台执行
-   `cargoctl.dumpLine(线路ID)`，对比改前改后日志，找到装卸设置实际存在哪个字段。
-4. 对一个有货的仓库执行 `cargoctl.dumpStock(仓库ID)`，找到货物类型和数量字段。
-5. 按结果改 `adapter.lua` 的 `FIELDS.getUnload / setUnload / stock`。
-
-如果第 3 步发现每站装卸设置不在 `stopConfig` 而在 `Line.customFilters`，同样只改 `FIELDS`。
+2. 开一个存档，看游戏日志里 `[cargo_control]` 开头的行：
+   - `游戏脚本已启动`
+   - `线路管理器卸货设置已安装`
+   - `仓库窗口扩展点: ...`，**或者** `找不到仓库窗口扩展点`
+   - 紧接着是一条线路（`LINE ...`）和几个库存（`STOCK_LIST ...`）的完整结构
+3. 把这些日志发给作者，用来修正 `FIELDS` 和仓库扩展点。
+4. 如果出现「找不到仓库窗口扩展点」：在游戏安装目录里找
+   `content/gui/entity_window/`，把里面的文件夹列表发过来，或者搜一下哪个文件包含
+   `EowExtensionPoint` 且和仓库有关。
 
 ## 已知风险
 
-- **货已在车上**：TF3 的货物在出发时就规划了去处。如果仓库已满、停止卸货，
-  车上的这批货可能被带回或滞留在车上。建议这些站点配合设置较短的最长等待时间，
-  或者给站点绑定第二个溢出仓库。进游戏后需要观察实际表现。
-- **路由不会立刻变**：改线路设置后，游戏可能要重新计算货物路线，库存变化有延迟。
-  回差就是为此设置的，必要时调大。
-- **多人游戏**：控制循环跑在 GUI 状态里，单机没问题。多人联机要搬到游戏脚本
-  （`update` / `handleEvent`），并通过 `makeScriptingSendEventCmd` 下发规则，
-  以保证各端一致。
+- **货已在车上**：TF3 的货物出发时就规划了去处。仓库满了停卸后，车上的货可能被拉回
+  或滞留。建议这些站点设短一点的最长等待时间。需要进游戏观察。
+- **路由延迟**：改线路设置后，游戏重新规划货物路线需要时间，库存变化有滞后。
+- **和其他 mod 共存**：Improved Destination Displays 也替换 `LineCargoDisplay`。
+  替换是链式的（`CallOriginalRecipe`），理论上两个都能显示，需要实测。
 
 ## 后续
 
-1. 进游戏确认 `FIELDS`（上一节）。
-2. 图形界面：在仓库窗口加“每种货物上限”一栏，在线路窗口的每站加“卸 / 不卸 / 默认”
-   开关。已知的窗口扩展点有 `IndustryEowExtensionPoint`、`VehicleEowExtensionPoint`
-   等；仓库和线路窗口的扩展点名字需要在游戏的 `.tl` 源文件里找。
-3. 自动绑定站点和仓库（现在要手动 `bind`）。
-4. “禁止存放”的第二种实现：仓库槽位专用化 `makeStockListSetStocksCargoTypeCmd`，
-   直接不给该货物分配槽位。可以和本方案配合使用。
+- 线路信息窗口（`LineEowExtensionPoint`）里也加一份分站卸货设置。
+- 仓库面板里手动指定关联车站（规则层已支持 `CC_Bind` 事件，界面还没做）。
+- 关联半径做成 mod 选项。

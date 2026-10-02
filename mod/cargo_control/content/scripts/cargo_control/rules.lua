@@ -1,42 +1,43 @@
 -- 规则引擎（纯 Lua，不调用任何游戏 API，可在游戏外单测）。
 --
--- 三条需求在这里统一成一个判断：某条线路 line 的第 stopIndex 站，
--- 车辆到站时，货物 cargo 要不要卸？
+-- 三条需求在这里统一成一个判断：线路 line 停靠站点组 stationGroup 时，
+-- 货物 cargo 要不要卸？
 --
 --   1. 仓库禁止存放某货物      = 仓库对该货物上限为 0
 --   2. 线路在某站卸/不卸某货物 = 站点规则 "unload" / "keep"
 --   3. 仓库限量，超过不卸货    = 仓库对该货物上限为 n，库存 >= n 停卸，
 --                                回落到 n - 回差 以下再恢复（防止来回抖动）
 --
+-- 站点规则按「线路 + 站点组」存，不按站序号，所以线路增删、调整停靠顺序后
+-- 规则仍然跟着车站走。同一线路多次停靠同一车站时共用一条规则。
+--
 -- decide() 返回 true（卸）、false（不卸）或 nil（不干预，沿用游戏原设置）。
 local rules = {}
 
-rules.VERSION = 1
+rules.VERSION = 2
 
--- 站点规则的取值
-rules.UNLOAD = "unload" -- 在此站强制卸下（仍受仓库上限约束）
-rules.KEEP = "keep"     -- 在此站绝不卸下
+rules.UNLOAD = "unload" -- 在此站卸下（仍受仓库上限约束）
+rules.KEEP = "keep"     -- 在此站不卸
+rules.ALL = "*"         -- 站点规则里代表「全部货物」；具体货物的规则优先
 
 function rules.newState()
 	return {
 		version = rules.VERSION,
-		-- warehouses[仓库实体ID] = { caps = { [货物ID] = 上限 } }
+		-- warehouses[仓库ID] = { caps = { [货物] = 上限 } }
 		-- 上限 nil = 不限，0 = 禁止存放，n > 0 = 最多存 n
 		warehouses = {},
-		-- stationWarehouse[站点组实体ID] = 仓库实体ID
-		-- 站点卸下的货进哪个仓库。游戏里查不到时由玩家手动绑定。
+		-- stationWarehouse[站点组ID] = 仓库ID（手动指定；没有就用自动关联）
 		stationWarehouse = {},
-		-- stopRules[线路ID][站序号][货物ID] = "unload" | "keep"
+		-- stopRules[线路ID][站点组ID][货物 或 "*"] = "unload" | "keep"
 		stopRules = {},
 		-- 回差：停卸后，库存要降到 上限 - 回差 才恢复卸货
 		hysteresisRatio = 0.1,
 	}
 end
 
-local function key(id)
-	-- 存档序列化后数字键可能变成字符串，统一用字符串做键
-	return tostring(id)
-end
+-- 存档序列化后数字键可能变成字符串，统一用字符串做键
+local function key(id) return tostring(id) end
+rules.key = key
 
 local function sub(t, k)
 	local v = t[k]
@@ -61,7 +62,7 @@ function rules.setWarehouseCap(state, warehouse, cargo, cap)
 	local caps = sub(wh, "caps")
 	caps[cargo] = cap
 	prune(wh, "caps")
-	if wh.caps == nil then state.warehouses[key(warehouse)] = nil end
+	prune(state.warehouses, key(warehouse))
 end
 
 function rules.forbid(state, warehouse, cargo)
@@ -73,31 +74,47 @@ function rules.getWarehouseCap(state, warehouse, cargo)
 	return wh and wh.caps and wh.caps[cargo]
 end
 
+function rules.warehouseCaps(state, warehouse)
+	local wh = state.warehouses[key(warehouse)]
+	return (wh and wh.caps) or {}
+end
+
 function rules.bindStation(state, stationGroup, warehouse)
 	state.stationWarehouse[key(stationGroup)] = warehouse and key(warehouse) or nil
 end
 
-function rules.warehouseOfStation(state, stationGroup)
-	return state.stationWarehouse[key(stationGroup)]
+-- autoBinding：控制器按距离算出的 { [站点组] = 仓库 }，手动指定优先
+function rules.warehouseOfStation(state, stationGroup, autoBinding)
+	local k = key(stationGroup)
+	return state.stationWarehouse[k] or (autoBinding and autoBinding[k])
 end
 
--- mode = "unload" | "keep" | nil（清除）
-function rules.setStopRule(state, line, stopIndex, cargo, mode)
+-- mode = "unload" | "keep" | nil（清除）；cargo 可以是 rules.ALL
+function rules.setStopRule(state, line, stationGroup, cargo, mode)
 	assert(mode == nil or mode == rules.UNLOAD or mode == rules.KEEP, "未知的站点规则: " .. tostring(mode))
 	local l = sub(state.stopRules, key(line))
-	local s = sub(l, key(stopIndex))
+	local s = sub(l, key(stationGroup))
 	s[cargo] = mode
-	prune(l, key(stopIndex))
+	prune(l, key(stationGroup))
 	prune(state.stopRules, key(line))
 end
 
-function rules.getStopRule(state, line, stopIndex, cargo)
+-- 只看这一条（不回落到 "*"），给界面显示用
+function rules.getOwnStopRule(state, line, stationGroup, cargo)
 	local l = state.stopRules[key(line)]
-	local s = l and l[key(stopIndex)]
+	local s = l and l[key(stationGroup)]
 	return s and s[cargo]
 end
 
--- 恢复卸货的库存阈值
+-- 实际生效的：具体货物 > "*"
+function rules.getStopRule(state, line, stationGroup, cargo)
+	local l = state.stopRules[key(line)]
+	local s = l and l[key(stationGroup)]
+	if not s then return nil end
+	if s[cargo] ~= nil then return s[cargo] end
+	return s[rules.ALL]
+end
+
 function rules.resumeLevel(state, cap)
 	local gap = math.max(1, math.floor(cap * (state.hysteresisRatio or 0)))
 	return math.max(0, cap - gap)
@@ -118,31 +135,26 @@ function rules.warehouseAccepts(state, warehouse, cargo, stock, prevAllowed)
 	return true
 end
 
--- 核心判断。ctx = {
---   line, stopIndex, stationGroup, cargo,
---   stock        = 仓库当前该货物库存（可为 nil）,
---   prevAllowed  = 上次判断结果（可为 nil）,
--- }
+-- ctx = { line, stationGroup, cargo, warehouse, stock, prevAllowed }
 -- 返回 allow(true/false/nil), reason(string)
 function rules.decide(state, ctx)
-	local mode = rules.getStopRule(state, ctx.line, ctx.stopIndex, ctx.cargo)
+	local mode = rules.getStopRule(state, ctx.line, ctx.stationGroup, ctx.cargo)
 	if mode == rules.KEEP then
-		return false, "站点规则：此站不卸"
+		return false, "站点规则：不卸"
 	end
 
-	local wh = rules.warehouseOfStation(state, ctx.stationGroup)
+	local wh = ctx.warehouse
 	local accepts = rules.warehouseAccepts(state, wh, ctx.cargo, ctx.stock, ctx.prevAllowed)
 	if accepts == false then
 		local cap = rules.getWarehouseCap(state, wh, ctx.cargo)
 		if cap == 0 then return false, "仓库禁止存放" end
-		return false, string.format("仓库已满（%d/%d）", ctx.stock or 0, cap)
+		return false, string.format("仓库已满 %d/%d", ctx.stock or 0, cap)
 	end
 
 	if mode == rules.UNLOAD then
-		return true, "站点规则：此站卸货"
+		return true, "站点规则：卸货"
 	end
 	if accepts == true then
-		-- 仓库有上限且未满：不强制卸，交给游戏原设置
 		return nil, "仓库未满"
 	end
 	return nil, "无规则"
@@ -155,6 +167,10 @@ function rules.load(saved)
 	end
 	local state = rules.newState()
 	for k, v in pairs(saved) do state[k] = v end
+	if saved.version < 2 then
+		-- v1 的站点规则按站序号存，无法可靠换算成站点组，丢弃
+		state.stopRules = {}
+	end
 	state.version = rules.VERSION
 	return state
 end
