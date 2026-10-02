@@ -1,0 +1,8 @@
+{
+    "authors": [ { "name": "bigzt", "role": "CREATOR" } ],
+    "description": "精细控制物流链：仓库按货物设置上限（0 = 禁止存放，超过上限则不卸货），线路可按站点、按货物设置卸 / 不卸。",
+    "name": "Cargo Control",
+    "summary": "仓库货物上限 / 禁存，线路分站卸货控制",
+    "tags": [ "Script Mod" ],
+    "url": ""
+}

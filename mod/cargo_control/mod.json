@@ -1,0 +1,13 @@
+{
+    "dependencies": null,
+    "incompatibilities": null,
+    "modId": "cargo_control",
+    "options": null,
+    "params": null,
+    "postRunScript": { "fileName": "" },
+    "preRunScript": { "fileName": "" },
+    "revision": 1,
+    "runScript": { "fileName": "" },
+    "severityAdd": "None",
+    "severityRemove": "None"
+}

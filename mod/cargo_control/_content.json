@@ -1,0 +1,10 @@
+{
+    "archives": null,
+    "files": [
+        "gui/cargo_control/cargo_control.res.lua",
+        "gui/cargo_control/cargo_control.script.lua",
+        "scripts/cargo_control/adapter.lua",
+        "scripts/cargo_control/controller.lua",
+        "scripts/cargo_control/rules.lua"
+    ]
+}
